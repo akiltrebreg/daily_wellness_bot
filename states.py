@@ -1,6 +1,5 @@
-from aiogram.dispatcher.filters.state import State, StatesGroup
+from aiogram.fsm.state import State, StatesGroup
 
-# Состояния пользователей
 class ProfileForm(StatesGroup):
     weight = State()
     height = State()

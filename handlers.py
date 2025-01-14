@@ -135,7 +135,7 @@ async def log_water(message: Message):
         remaining = max(0, users[user_id]["water_goal"] - users[user_id]["logged_water"])
         await message.reply(f"Внесено {amount} мл воды. Осталось: {remaining} мл до нормы.")
     except (IndexError, ValueError):
-        await message.reply("Используйте: /log_water <количество воды в мл>.")
+        await message.reply("Отправьте: /log_water <количество воды в мл>.")
 
 # Внесение еды
 @router.message(Command("log_food"))
@@ -146,17 +146,32 @@ async def log_food(message: Message):
         return
 
     try:
-        food = message.text.split(maxsplit=1)[1]
-        response = requests.get(f"https://world.openfoodfacts.org/api/v0/product/{food}.json").json()
-        product = response.get("product", {})
-        calories_per_100g = product.get("nutriments", {}).get("energy-kcal_100g", 0)
-        if calories_per_100g:
-            await message.reply(f"{food} содержит {calories_per_100g} ккал на 100 г. Сколько граммов вы съели?")
-            users[user_id]["pending_food"] = calories_per_100g
+        # Получаем название продукта
+        food = message.text.split(maxsplit=1)[1].strip().lower()
+        response = requests.get(f"https://world.openfoodfacts.org/api/v0/product/search?q={food}&page_size=1").json()
+
+        # Ищем продукт в ответе от API
+        products = response.get("products", [])
+        if not products:
+            await message.reply(f"Продукт с названием '{food}' не найден.")
+            return
+
+        product = products[0]  # Берем первый найденный продукт
+        product_name = product.get("product_name", "").lower()  # Имя продукта (приведенное к нижнему регистру).
+
+        # Проверяем, совпадает ли имя продукта с запросом
+        if food in product_name:
+            calories_per_100g = product.get("nutriments", {}).get("energy-kcal_100g", 0)
+            if calories_per_100g:
+                await message.reply(
+                    f"{product_name} содержит {calories_per_100g} ккал на 100 г. Сколько граммов вы съели?")
+                users[user_id]["pending_food"] = calories_per_100g
+            else:
+                await message.reply("Нет данных о калориях для данного продукта.")
         else:
-            await message.reply("Нет данных о калориях для данного продукта.")
+            await message.reply(f"Продукт с названием '{food}' не найден.")
     except IndexError:
-        await message.reply("Используйте: /log_food <название продукта>.")
+        await message.reply("Отправьте: /log_food <название продукта на английском>.")
 
 # Проверка прогресса
 @router.message(Command("check_progress"))
