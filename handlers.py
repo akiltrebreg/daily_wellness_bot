@@ -248,35 +248,27 @@ async def calculate_calories(message: Message, state: FSMContext):
         # Получаем текущую дату
         today = datetime.now().date()
 
-        # Если история для текущего дня еще не сохранена, создаем пустой словарь
+        # Если история для текущего пользователя еще не сохранена, создаем пустой словарь
         if user_id not in users:
             users[user_id] = {}
 
-        # Инициализируем историю для дня, если ее нет
-        if "history" not in users[user_id]:
-            users[user_id]["history"] = {}
+        # Сохранение статистики в daily_stats
+        users[user_id]["daily_stats"].setdefault(today, {"water": 0, "calories": 0})
+        users[user_id]["daily_stats"][today]["calories"] += amount
 
-        # Проверяем, если данных за текущий день нет, создаем их
-        if today not in users[user_id]["history"]:
-            users[user_id]["history"][today] = {"consumed_calories": 0}
-
-        # Добавляем калории в историю за сегодняшний день
-        users[user_id]["history"][today]["consumed_calories"] += amount
+        # Обновляем общий счетчик потребленных калорий
+        users[user_id]["logged_calories"] = users[user_id].get("logged_calories", 0) + amount
 
         # Получаем текущую цель по калориям
         calorie_goal = users[user_id].get("calorie_goal", 2000)
 
         # Проверяем, если съели больше, чем норма - остаток должен быть 0
-        remaining = max(0, calorie_goal - users[user_id]["history"][today]["consumed_calories"])
-
-        # Сохранение статистики
-        users[user_id]["daily_stats"].setdefault(today, {"water": 0, "calories": 0})
-        users[user_id]["daily_stats"][today]["calories"] += amount
+        remaining = max(0, calorie_goal - users[user_id]["logged_calories"])
 
         # Отправляем ответ
         await message.reply(
             f"Вы съели {ate_gram} г {product_name}, это {amount:.2f} ккал.\n"
-            f"Всего потреблено: {users[user_id]['history'][today]['consumed_calories']:.2f} ккал.\n"
+            f"Всего потреблено: {users[user_id]['logged_calories']:.2f} ккал.\n"
             f"Осталось {remaining:.2f} ккал до нормы ({calorie_goal} ккал)."
         )
 
