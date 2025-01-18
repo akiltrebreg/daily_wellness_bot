@@ -6,3 +6,6 @@ class ProfileForm(StatesGroup):
     age = State()
     activity = State()
     city = State()
+
+class FoodState(StatesGroup):
+    waiting_for_grams = State()

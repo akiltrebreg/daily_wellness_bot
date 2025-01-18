@@ -1,0 +1,11 @@
+version: '3.8'
+
+services:
+  bot:
+    build: .
+    container_name: wellness_bot
+    restart: "no"
+    volumes:
+      - .:/app
+    ports:
+      - "8000:8000"
