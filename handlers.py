@@ -4,6 +4,7 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 import requests
+from datetime import datetime
 from config import WEATHER_API_KEY
 from states import ProfileForm
 
@@ -12,10 +13,28 @@ router = Router()
 # Сохранение данных о пользователях
 users = {}
 
+
+def reset_daily_stats(user_id):
+    today = datetime.now().date()
+    user = users[user_id]
+    if user.get("last_date") != today:
+        # Сохранение статистики за предыдущий день
+        if "last_date" in user:
+            previous_date = user["last_date"]
+            user["daily_stats"].setdefault(previous_date,
+                                           {"water": user["logged_water"], "calories": user["logged_calories"]})
+
+        # Сброс ежедневной статистики
+        user["last_date"] = today
+        user["logged_water"] = 0
+        user["logged_calories"] = 0
+
+
 # Команда /start
 @router.message(Command("start"))
 async def send_welcome(message: Message):
     await message.reply("Добро пожаловать! Введите /help для просмотра списка команд.")
+
 
 # Команда /help
 @router.message(Command("help"))
@@ -29,24 +48,29 @@ async def cmd_help(message: Message):
         "/check_progress - Посмотреть прогресс\n"
     )
 
+
 # Настройка профиля пользователя
 @router.message(Command("set_profile"))
 async def set_profile(message: Message, state: FSMContext):
     user_id = message.from_user.id
-    users[user_id] = {
-        "weight": None,
-        "height": None,
-        "age": None,
-        "activity": None,
-        "city": None,
-        "water_goal": None,
-        "calorie_goal": None,
-        "logged_water": 0,
-        "logged_calories": 0,
-        "burned_calories": 0
-    }
+    if user_id not in users:
+        users[user_id] = {
+            "weight": None,
+            "height": None,
+            "age": None,
+            "activity": None,
+            "city": None,
+            "water_goal": None,
+            "calorie_goal": None,
+            "logged_water": 0,
+            "logged_calories": 0,
+            "burned_calories": 0,
+            "last_date": datetime.now().date(),
+            "daily_stats": {}
+        }
     await message.reply("Сколько вы весите? (в килограммах)")
     await state.set_state(ProfileForm.weight)
+
 
 @router.message(ProfileForm.weight)
 async def handle_weight(message: Message, state: FSMContext):
@@ -59,6 +83,7 @@ async def handle_weight(message: Message, state: FSMContext):
     except ValueError:
         await message.reply("Введите корректное значение веса (число).")
 
+
 @router.message(ProfileForm.height)
 async def handle_height(message: Message, state: FSMContext):
     try:
@@ -69,6 +94,7 @@ async def handle_height(message: Message, state: FSMContext):
         await state.set_state(ProfileForm.age)
     except ValueError:
         await message.reply("Введите корректное значение роста (число).")
+
 
 @router.message(ProfileForm.age)
 async def handle_age(message: Message, state: FSMContext):
@@ -81,6 +107,7 @@ async def handle_age(message: Message, state: FSMContext):
     except ValueError:
         await message.reply("Введите корректное значение возраста (целое число).")
 
+
 @router.message(ProfileForm.activity)
 async def handle_activity(message: Message, state: FSMContext):
     try:
@@ -91,6 +118,7 @@ async def handle_activity(message: Message, state: FSMContext):
         await state.set_state(ProfileForm.city)
     except ValueError:
         await message.reply("Введите корректное значение физической активности (целое число).")
+
 
 @router.message(ProfileForm.city)
 async def handle_city(message: Message, state: FSMContext):
@@ -121,6 +149,7 @@ async def handle_city(message: Message, state: FSMContext):
     )
     await state.clear()
 
+
 # Внесение воды
 @router.message(Command("log_water"))
 async def log_water(message: Message):
@@ -129,49 +158,22 @@ async def log_water(message: Message):
         await message.reply("Настройте свой профиль с помощью /set_profile.")
         return
 
+    reset_daily_stats(user_id)
+
     try:
         amount = int(message.text.split()[1])
         users[user_id]["logged_water"] += amount
         remaining = max(0, users[user_id]["water_goal"] - users[user_id]["logged_water"])
+
+        # Сохранение статистики
+        today = datetime.now().date()
+        users[user_id]["daily_stats"].setdefault(today, {"water": 0, "calories": 0})
+        users[user_id]["daily_stats"][today]["water"] += amount
+
         await message.reply(f"Внесено {amount} мл воды. Осталось: {remaining} мл до нормы.")
     except (IndexError, ValueError):
         await message.reply("Отправьте: /log_water <количество воды в мл>.")
 
-# Внесение еды
-@router.message(Command("log_food"))
-async def log_food(message: Message):
-    user_id = message.from_user.id
-    if user_id not in users:
-        await message.reply("Настройте свой профиль с помощью /set_profile.")
-        return
-
-    try:
-        # Получаем название продукта
-        food = message.text.split(maxsplit=1)[1].strip().lower()
-        response = requests.get(f"https://world.openfoodfacts.org/api/v0/product/search?q={food}&page_size=1").json()
-
-        # Ищем продукт в ответе от API
-        products = response.get("products", [])
-        if not products:
-            await message.reply(f"Продукт с названием '{food}' не найден.")
-            return
-
-        product = products[0]  # Берем первый найденный продукт
-        product_name = product.get("product_name", "").lower()  # Имя продукта (приведенное к нижнему регистру).
-
-        # Проверяем, совпадает ли имя продукта с запросом
-        if food in product_name:
-            calories_per_100g = product.get("nutriments", {}).get("energy-kcal_100g", 0)
-            if calories_per_100g:
-                await message.reply(
-                    f"{product_name} содержит {calories_per_100g} ккал на 100 г. Сколько граммов вы съели?")
-                users[user_id]["pending_food"] = calories_per_100g
-            else:
-                await message.reply("Нет данных о калориях для данного продукта.")
-        else:
-            await message.reply(f"Продукт с названием '{food}' не найден.")
-    except IndexError:
-        await message.reply("Отправьте: /log_food <название продукта на английском>.")
 
 # Проверка прогресса
 @router.message(Command("check_progress"))
@@ -181,7 +183,10 @@ async def check_progress(message: Message):
         await message.reply("Настройте свой профиль с помощью /set_profile.")
         return
 
+    reset_daily_stats(user_id)
+
     user = users[user_id]
     water_progress = f"Вода: {user['logged_water']} из {user['water_goal']} мл"
     calorie_progress = f"Калории: {user['logged_calories']} из {user['calorie_goal']} ккал"
+
     await message.reply(f"Ваш прогресс:\n{water_progress}\n{calorie_progress}")
