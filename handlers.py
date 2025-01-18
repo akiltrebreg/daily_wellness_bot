@@ -5,7 +5,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 import requests
 from datetime import datetime
-from config import WEATHER_API_KEY
+from config import WEATHER_API_KEY, WEATHER_API_URL, WGER_API_KEY, WGER_API_URL, FOOD_API_URL
 from states import ProfileForm, FoodState
 
 router = Router()
@@ -52,6 +52,7 @@ async def cmd_help(message: Message):
         "/set_profile - Настройка профиля\n"
         "/log_water - Внести показатели воды\n"
         "/log_food - Внести показатели калорий\n"
+        "/log_workout - Логирование тренировок\n"
         "/check_progress - Посмотреть прогресс\n"
     )
 
@@ -129,7 +130,7 @@ async def handle_city(message: Message, state: FSMContext):
 
     # Запрос данных о погоде
     response = requests.get(
-        f"http://api.openweathermap.org/data/2.5/weather?q={city}&appid={WEATHER_API_KEY}&units=metric"
+        f"{WEATHER_API_URL}?q={city}&appid={WEATHER_API_KEY}&units=metric"
     ).json()
 
     temperature = response.get("main", {}).get("temp", 20)  # По умолчанию: 20°С
@@ -187,7 +188,7 @@ async def log_food(message: Message, state: FSMContext):
         # Получаем название продукта
         food = message.text.split(maxsplit=1)[1].strip().lower()
         response = requests.get(
-            f"https://world.openfoodfacts.org/cgi/search.pl",
+            f"{FOOD_API_URL}",
             params={"search_terms": food, "search_simple": "1", "action": "process", "json": "1", "page_size": 3}
         ).json()
 
@@ -280,6 +281,60 @@ async def calculate_calories(message: Message, state: FSMContext):
     except Exception as e:
         await message.reply(f"Произошла ошибка: {e}")
         await state.clear()
+
+
+@router.message(Command("log_workout"))
+async def log_workout(message: Message, state: FSMContext):
+    user_id = message.from_user.id
+    if user_id not in users:
+        await message.reply("Настройте свой профиль с помощью /set_profile.")
+        return
+
+    try:
+        # Извлекаем данные о тренировке
+        command = message.text.split(maxsplit=2)
+        if len(command) < 3:
+            await message.reply("Используйте команду в формате: /log_workout <тип тренировки> <время (мин)>")
+            return
+
+        workout_type = command[1].strip().lower()
+        workout_time = int(command[2].strip())
+
+        # Получаем данные с API Wger для типа тренировки
+        response = requests.get(
+            f"{WGER_API_URL}?name={workout_type}",
+            headers={"Authorization": f"Token {WGER_API_KEY}"}
+        ).json()
+
+        if not response["results"]:
+            await message.reply(f"Тренировка с типом '{workout_type}' не найдена.")
+            return
+
+        # Рассчитываем сожжённые калории на основе данных API
+        calories_burned = response["results"][0]["calories"] * (workout_time / 60)
+
+        # Расход воды на тренировке (200 мл за каждые 30 минут)
+        water_consumed = (workout_time // 30) * 200
+
+        # Логируем данные
+        users[user_id]["logged_calories"] = users[user_id].get("logged_calories", 0) + calories_burned
+        users[user_id]["logged_water"] = users[user_id].get("logged_water", 0) + water_consumed
+
+        # Получаем текущую дату и сохраняем информацию о тренировке
+        today = datetime.now().date()
+        users[user_id]["daily_stats"].setdefault(today, {"water": 0, "calories": 0})
+        users[user_id]["daily_stats"][today]["calories"] += calories_burned
+        users[user_id]["daily_stats"][today]["water"] += water_consumed
+
+        await message.reply(
+            f"🏃‍♂️ {workout_type.capitalize()} {workout_time} минут — {calories_burned:.2f} ккал. "
+            f"Дополнительно: выпейте {water_consumed} мл воды."
+        )
+
+    except ValueError:
+        await message.reply("Время тренировки должно быть числом в минутах.")
+    except Exception as e:
+        await message.reply(f"Произошла ошибка: {e}")
 
 
 # Проверка прогресса
