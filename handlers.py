@@ -84,7 +84,7 @@ async def set_profile(message: Message, state: FSMContext):
 @router.message(ProfileForm.weight)
 async def handle_weight(message: Message, state: FSMContext):
     try:
-        weight = float(message.text)
+        weight = float(message.text.strip())
         user_id = message.from_user.id
         users[user_id]["weight"] = weight
         await message.reply("Какой у вас рост? (в сантиметрах)")
@@ -95,7 +95,7 @@ async def handle_weight(message: Message, state: FSMContext):
 @router.message(ProfileForm.height)
 async def handle_height(message: Message, state: FSMContext):
     try:
-        height = float(message.text)
+        height = float(message.text.strip())
         user_id = message.from_user.id
         users[user_id]["height"] = height
         await message.reply("Сколько вам полных лет?")
@@ -106,7 +106,7 @@ async def handle_height(message: Message, state: FSMContext):
 @router.message(ProfileForm.age)
 async def handle_age(message: Message, state: FSMContext):
     try:
-        age = int(message.text)
+        age = int(message.text.strip())
         user_id = message.from_user.id
         users[user_id]["age"] = age
         await message.reply("Сколько минут в день вы уделяете физической активности?")
@@ -117,7 +117,7 @@ async def handle_age(message: Message, state: FSMContext):
 @router.message(ProfileForm.activity)
 async def handle_activity(message: Message, state: FSMContext):
     try:
-        activity = int(message.text)
+        activity = int(message.text.strip())
         user_id = message.from_user.id
         users[user_id]["activity"] = activity
         await message.reply("Введите ваш город (на английском языке):")
@@ -171,7 +171,7 @@ async def log_water(message: Message):
 
         # Сохранение статистики
         today = datetime.now().date()
-        users[user_id]["daily_stats"].setdefault(today, {"water": 0, "calories": 0})
+        users[user_id]["daily_stats"].setdefault(today, {"water": 0, "calories": 0, "burned_calories": 0})
         users[user_id]["daily_stats"][today]["water"] += amount
 
         await message.reply(f"Внесено {amount} мл воды. Осталось: {remaining} мл до нормы.")
@@ -229,7 +229,7 @@ async def log_food(message: Message, state: FSMContext):
     except IndexError:
         await message.reply("Используйте: /log_food <название продукта>.")
     except Exception as e:
-        await message.reply(f"Произошла ошибка: {e}")
+        await message.reply(f"Настройте профиль /set_profile")
 
 
 @router.message(FoodState.waiting_for_grams)
@@ -257,7 +257,7 @@ async def calculate_calories(message: Message, state: FSMContext):
             users[user_id] = {}
 
         # Сохранение статистики в daily_stats
-        users[user_id]["daily_stats"].setdefault(today, {"water": 0, "calories": 0})
+        users[user_id]["daily_stats"].setdefault(today, {"water": 0, "calories": 0, "burned_calories": 0})
         users[user_id]["daily_stats"][today]["calories"] += amount
 
         # Обновляем общий счетчик потребленных калорий
@@ -282,21 +282,19 @@ async def calculate_calories(message: Message, state: FSMContext):
     except ValueError:
         await message.reply("Введите корректное число граммов.")
     except Exception as e:
-        await message.reply(f"Произошла ошибка: {e}")
+        await message.reply(f"Настройте профиль /set_profile")
         await state.clear()
 
 
 @router.message(Command("log_workout"))
 async def log_workout_start(message: Message, state: FSMContext):
-    """Начало логирования тренировки: запрос типа тренировки."""
-    await message.reply("Введите тип тренировки (например: бег, йога, плавание).")
+    await message.reply("Введите тип тренировки.")
     await state.set_state(WorkoutState.waiting_for_workout_type)
 
 
 @router.message(WorkoutState.waiting_for_workout_type)
 async def get_workout_type(message: Message, state: FSMContext):
-    """Получение типа тренировки и запрос времени."""
-    workout_type = message.text.strip().lower()
+    workout_type = message.text.strip()
     await state.update_data(workout_type=workout_type)
     await message.reply("Теперь введите продолжительность тренировки в минутах.")
     await state.set_state(WorkoutState.waiting_for_duration)
@@ -334,7 +332,7 @@ async def log_workout(message: Message, state: FSMContext):
         calories_burned = float(response[0]["total_calories"])
 
         # Рассчитываем расход воды на тренировке (200 мл за каждые 30 минут)
-        water_consumed = (workout_time // 30) * 200
+        water_consumed = (workout_time / 30) * 200
 
         # Логируем данные, приводя типы к числовым для безопасности
         users[user_id]["logged_calories"] = float(users[user_id].get("logged_calories", 0)) - calories_burned
@@ -351,7 +349,7 @@ async def log_workout(message: Message, state: FSMContext):
 
         # Отправляем пользователю ответ
         await message.reply(
-            f"🏃‍♂️ {workout_type.capitalize()} {workout_time} минут — {calories_burned:.2f} ккал. "
+            f"🏃‍♂️ {workout_type.capitalize()} {workout_time} минут — {calories_burned:.2f} ккал.\n"
             f"Дополнительно: выпейте {water_consumed} мл воды."
         )
 
@@ -361,16 +359,20 @@ async def log_workout(message: Message, state: FSMContext):
     except ValueError:
         await message.reply("Введите корректное число минут.")
     except Exception as e:
-        await message.reply(f"Произошла ошибка: {e}")
+        await message.reply(f"Настройте профиль /set_profile")
         await state.clear()
 
 
 # Проверка прогресса
 @router.message(Command("check_progress"))
-async def check_progress(message: Message):
+async def check_progress(message: Message, state: FSMContext):
     user_id = message.from_user.id
     if user_id not in users:
         await message.reply("Настройте свой профиль с помощью /set_profile.")
+        return
+
+    if not all([users[user_id].get(key) for key in ["age", "weight", "height", "activity", "city"]]):
+        await message.reply("Профиль не завершён. Пожалуйста, завершите настройку профиля с помощью /set_profile.")
         return
 
     # Сброс статистики перед отображением (например, по окончании дня)
@@ -395,4 +397,4 @@ async def check_progress(message: Message):
     )
 
     # Отправляем сообщение с прогрессом и историей
-    await message.reply(f"📊 Ваш прогресс:\n{water_progress}\n{water_to_drink}\n{calorie_progress}\n{calorie_were_burned}\n{calorie_to_eat}{history}")
+    await message.reply(f"📊 Ваш прогресс:\n{water_progress}\n{water_to_drink}\n\n{calorie_progress}\n{calorie_were_burned}\n{calorie_to_eat}{history}")
