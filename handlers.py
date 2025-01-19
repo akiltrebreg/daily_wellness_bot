@@ -1,5 +1,5 @@
 from aiogram import Router
-from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, BufferedInputFile
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
@@ -7,6 +7,9 @@ import requests
 from datetime import datetime
 from config import WEATHER_API_KEY, WEATHER_API_URL, CALORIES_BURNED_API_KEY, CALORIES_BURNED_API_URL, FOOD_API_URL
 from states import ProfileForm, FoodState, WorkoutState
+import matplotlib.pyplot as plt
+import io
+from datetime import datetime
 
 router = Router()
 
@@ -14,6 +17,9 @@ router = Router()
 users = {}
 
 def reset_daily_stats(user_id):
+    """
+    Функция для сброса статистики.
+    """
     today = datetime.now().date()
     user = users[user_id]
 
@@ -57,6 +63,7 @@ async def cmd_help(message: Message):
         "/log_food - Внести показатели калорий\n"
         "/log_workout - Логирование тренировок\n"
         "/check_progress - Посмотреть прогресс\n"
+        "/plot_history - Посмотреть графики с историей прогресса\n"
     )
 
 # Настройка профиля пользователя
@@ -171,7 +178,14 @@ async def log_water(message: Message):
 
         # Сохранение статистики
         today = datetime.now().date()
-        users[user_id]["daily_stats"].setdefault(today, {"water": 0, "calories": 0, "burned_calories": 0})
+        user = users[user_id]
+        users[user_id]["daily_stats"].setdefault(today, {
+            "water": 0,
+            "calories": 0,
+            "burned_calories": 0,
+            "water_goal": user.get("water_goal", 0),
+            "calorie_goal": user.get("calorie_goal", 0)
+        })
         users[user_id]["daily_stats"][today]["water"] += amount
 
         await message.reply(f"Внесено {amount} мл воды. Осталось: {remaining} мл до нормы.")
@@ -257,7 +271,14 @@ async def calculate_calories(message: Message, state: FSMContext):
             users[user_id] = {}
 
         # Сохранение статистики в daily_stats
-        users[user_id]["daily_stats"].setdefault(today, {"water": 0, "calories": 0, "burned_calories": 0})
+        user = users[user_id]
+        users[user_id]["daily_stats"].setdefault(today, {
+            "water": 0,
+            "calories": 0,
+            "burned_calories": 0,
+            "water_goal": user.get("water_goal", 0),
+            "calorie_goal": user.get("calorie_goal", 0)
+        })
         users[user_id]["daily_stats"][today]["calories"] += amount
 
         # Обновляем общий счетчик потребленных калорий
@@ -341,7 +362,14 @@ async def log_workout(message: Message, state: FSMContext):
 
         # Получаем текущую дату и обновляем историю
         today = datetime.now().date()
-        users[user_id]["daily_stats"].setdefault(today, {"water": 0, "calories": 0, "burned_calories": 0})
+        user = users[user_id]
+        users[user_id]["daily_stats"].setdefault(today, {
+            "water": 0,
+            "calories": 0,
+            "burned_calories": 0,
+            "water_goal": user.get("water_goal", 0),
+            "calorie_goal": user.get("calorie_goal", 0)
+        })
 
         users[user_id]["daily_stats"][today]["calories"] = float(users[user_id]["daily_stats"][today]["calories"]) - calories_burned
         users[user_id]["daily_stats"][today]["water"] = float(users[user_id]["daily_stats"][today]["water"]) - water_consumed
@@ -365,7 +393,7 @@ async def log_workout(message: Message, state: FSMContext):
 
 # Проверка прогресса
 @router.message(Command("check_progress"))
-async def check_progress(message: Message, state: FSMContext):
+async def check_progress(message: Message):
     user_id = message.from_user.id
     if user_id not in users:
         await message.reply("Настройте свой профиль с помощью /set_profile.")
@@ -398,3 +426,84 @@ async def check_progress(message: Message, state: FSMContext):
 
     # Отправляем сообщение с прогрессом и историей
     await message.reply(f"📊 Ваш прогресс:\n{water_progress}\n{water_to_drink}\n\n{calorie_progress}\n{calorie_were_burned}\n{calorie_to_eat}{history}")
+
+
+# Графики с историей прогресса
+@router.message(Command("plot_history"))
+async def plot_history(message: Message, state: FSMContext):
+    user_id = message.from_user.id
+    if user_id not in users:
+        await message.reply("Настройте свой профиль с помощью /set_profile.")
+        return
+
+    if not all([users[user_id].get(key) for key in ["age", "weight", "height", "activity", "city"]]):
+        await message.reply("Профиль не завершён. Пожалуйста, завершите настройку профиля с помощью /set_profile.")
+        return
+
+    # Сброс статистики перед отображением (например, по окончании дня)
+    reset_daily_stats(user_id)
+
+    user = users[user_id]
+
+    # Данные для графиков
+    dates = list(user["daily_stats"].keys())
+    calories_logged = [user["daily_stats"][date]["calories"] for date in dates]
+    burned_calories = [user["daily_stats"][date]["burned_calories"] for date in dates]
+    calories_goals = [user["daily_stats"][date]["calorie_goal"] for date in dates]
+    water_logged = [user["daily_stats"][date]["water"] for date in dates]
+    water_goals = [user["daily_stats"][date]["water_goal"] for date in dates]
+
+    def plot_and_send(title, ylabel, data_pairs, colors, filename):
+        """
+        Общая функция для создания и отправки графиков.
+        """
+        fig, ax = plt.subplots(figsize=(8, 6))
+        for data, color, label in data_pairs:
+            ax.bar(dates, data, width=0.4, color=color, label=label, alpha=0.7)
+
+        # Настройка оси X
+        ax.set_xticks(dates)
+        ax.set_xticklabels(dates, rotation=0)
+
+        ax.set_xlabel("Дата")
+        ax.set_ylabel(ylabel)
+        ax.set_title(title)
+        ax.legend()
+
+        # Сохраняем график в буфер
+        buf = io.BytesIO()
+        plt.savefig(buf, format='png')
+        buf.seek(0)
+        photo = BufferedInputFile(buf.read(), filename=filename)
+        buf.close()
+        return photo
+
+    # Генерация и отправка графика по калориям
+    photo = plot_and_send(
+        title="Цель по калориям и количество потребленных калорий",
+        ylabel="Калории (ккал)",
+        data_pairs=[(calories_goals, 'green', 'Цель по калориям'), (calories_logged, 'salmon', 'Съеденные калории')],
+        colors=['green', 'salmon'],
+        filename='calories_plot.png'
+    )
+    await message.reply_photo(photo)
+
+    # Генерация и отправка графика по сожженным калориям
+    photo = plot_and_send(
+        title="Сожженные калории по дням",
+        ylabel="Калории (ккал)",
+        data_pairs=[(burned_calories, 'orange', 'Сожженные калории')],
+        colors=['orange'],
+        filename='burned_calories_plot.png'
+    )
+    await message.reply_photo(photo)
+
+    # Генерация и отправка графика по воде
+    photo = plot_and_send(
+        title="Цель по воде и количество выпитой воды",
+        ylabel="Вода (мл)",
+        data_pairs=[(water_goals, 'lightblue', 'Цель по воде'), (water_logged, 'blue', 'Выпитая вода')],
+        colors=['lightblue', 'blue'],
+        filename='water_plot.png'
+    )
+    await message.reply_photo(photo)
