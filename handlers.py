@@ -418,14 +418,8 @@ async def check_progress(message: Message):
     calorie_were_burned = f"Сожжено: {user['burned_calories']} ккал"
     calorie_to_eat = f"Осталось потребить: {calorie_remain} ккал"
 
-    # История по дням
-    history = "\n\nИстория:\n" + "\n".join(
-        f"{date}: Вода: {stats['water']} мл, Калории: {stats['calories']} ккал"
-        for date, stats in user['daily_stats'].items()
-    )
-
     # Отправляем сообщение с прогрессом и историей
-    await message.reply(f"📊 Ваш прогресс:\n{water_progress}\n{water_to_drink}\n\n{calorie_progress}\n{calorie_were_burned}\n{calorie_to_eat}{history}")
+    await message.reply(f"📊 Ваш прогресс:\n{water_progress}\n{water_to_drink}\n\n{calorie_progress}\n{calorie_were_burned}\n{calorie_to_eat}")
 
 
 # Графики с историей прогресса
