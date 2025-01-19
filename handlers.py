@@ -5,8 +5,8 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 import requests
 from datetime import datetime
-from config import WEATHER_API_KEY, WEATHER_API_URL, WGER_API_KEY, WGER_API_URL, FOOD_API_URL
-from states import ProfileForm, FoodState
+from config import WEATHER_API_KEY, WEATHER_API_URL, CALORIES_BURNED_API_KEY, CALORIES_BURNED_API_URL, FOOD_API_URL
+from states import ProfileForm, FoodState, WorkoutState
 
 router = Router()
 
@@ -22,6 +22,7 @@ def reset_daily_stats(user_id):
         user["last_date"] = today
         user["logged_water"] = 0
         user["logged_calories"] = 0
+        user["burned_calories"] = 0
         user["daily_stats"] = {}
         return
 
@@ -31,12 +32,14 @@ def reset_daily_stats(user_id):
         user["daily_stats"].setdefault(previous_date, {
             "water": user["logged_water"],
             "calories": user["logged_calories"],
-            "water_goal": user["water_goal"],
-            "calorie_goal": user["calorie_goal"]
+            "burned_calories": user.get("burned_calories", 0),
+            "water_goal": user.get("water_goal", 0),
+            "calorie_goal": user.get("calorie_goal", 0)
         })
         user["last_date"] = today
         user["logged_water"] = 0
         user["logged_calories"] = 0
+        user["burned_calories"] = 0
 
 # Команда /start
 @router.message(Command("start"))
@@ -284,57 +287,82 @@ async def calculate_calories(message: Message, state: FSMContext):
 
 
 @router.message(Command("log_workout"))
+async def log_workout_start(message: Message, state: FSMContext):
+    """Начало логирования тренировки: запрос типа тренировки."""
+    await message.reply("Введите тип тренировки (например: бег, йога, плавание).")
+    await state.set_state(WorkoutState.waiting_for_workout_type)
+
+
+@router.message(WorkoutState.waiting_for_workout_type)
+async def get_workout_type(message: Message, state: FSMContext):
+    """Получение типа тренировки и запрос времени."""
+    workout_type = message.text.strip().lower()
+    await state.update_data(workout_type=workout_type)
+    await message.reply("Теперь введите продолжительность тренировки в минутах.")
+    await state.set_state(WorkoutState.waiting_for_duration)
+
+
+@router.message(WorkoutState.waiting_for_duration)
 async def log_workout(message: Message, state: FSMContext):
     user_id = message.from_user.id
-    if user_id not in users:
-        await message.reply("Настройте свой профиль с помощью /set_profile.")
-        return
+    data = await state.get_data()
 
     try:
-        # Извлекаем данные о тренировке
-        command = message.text.split(maxsplit=2)
-        if len(command) < 3:
-            await message.reply("Используйте команду в формате: /log_workout <тип тренировки> <время (мин)>")
+        # Проверяем корректность ввода времени тренировки
+        workout_time = int(message.text.strip())
+        if workout_time <= 0:
+            await message.reply("Введите положительное число минут.")
             return
 
-        workout_type = command[1].strip().lower()
-        workout_time = int(command[2].strip())
+        # Получаем тип тренировки из состояния
+        workout_type = data.get("workout_type")
+        if not workout_type:
+            await message.reply("Произошла ошибка: тип тренировки не указан.")
+            return
 
-        # Получаем данные с API Wger для типа тренировки
+        # Отправляем запрос к API для расчёта калорий
         response = requests.get(
-            f"{WGER_API_URL}?name={workout_type}",
-            headers={"Authorization": f"Token {WGER_API_KEY}"}
+            f"{CALORIES_BURNED_API_URL}?activity={workout_type}&duration={workout_time}",
+            headers={"x-api-key": f"{CALORIES_BURNED_API_KEY}"}
         ).json()
 
-        if not response["results"]:
-            await message.reply(f"Тренировка с типом '{workout_type}' не найдена.")
+        if not response or not isinstance(response, list) or not isinstance(response[0].get("total_calories"), (int, float)):
+            await message.reply(f"Тренировка '{workout_type}' не найдена в базе или произошла ошибка в расчёте.")
             return
 
-        # Рассчитываем сожжённые калории на основе данных API
-        calories_burned = response["results"][0]["calories"] * (workout_time / 60)
+        # Получаем сожжённые калории
+        calories_burned = float(response[0]["total_calories"])
 
-        # Расход воды на тренировке (200 мл за каждые 30 минут)
+        # Рассчитываем расход воды на тренировке (200 мл за каждые 30 минут)
         water_consumed = (workout_time // 30) * 200
 
-        # Логируем данные
-        users[user_id]["logged_calories"] = users[user_id].get("logged_calories", 0) + calories_burned
-        users[user_id]["logged_water"] = users[user_id].get("logged_water", 0) + water_consumed
+        # Логируем данные, приводя типы к числовым для безопасности
+        users[user_id]["logged_calories"] = float(users[user_id].get("logged_calories", 0)) - calories_burned
+        users[user_id]["logged_water"] = float(users[user_id].get("logged_water", 0)) - water_consumed
+        users[user_id]["burned_calories"] = float(users[user_id].get("burned_calories", 0)) + calories_burned
 
-        # Получаем текущую дату и сохраняем информацию о тренировке
+        # Получаем текущую дату и обновляем историю
         today = datetime.now().date()
-        users[user_id]["daily_stats"].setdefault(today, {"water": 0, "calories": 0})
-        users[user_id]["daily_stats"][today]["calories"] += calories_burned
-        users[user_id]["daily_stats"][today]["water"] += water_consumed
+        users[user_id]["daily_stats"].setdefault(today, {"water": 0, "calories": 0, "burned_calories": 0})
 
+        users[user_id]["daily_stats"][today]["calories"] = float(users[user_id]["daily_stats"][today]["calories"]) - calories_burned
+        users[user_id]["daily_stats"][today]["water"] = float(users[user_id]["daily_stats"][today]["water"]) - water_consumed
+        users[user_id]["daily_stats"][today]["burned_calories"] = float(users[user_id]["daily_stats"][today]["burned_calories"]) + calories_burned
+
+        # Отправляем пользователю ответ
         await message.reply(
             f"🏃‍♂️ {workout_type.capitalize()} {workout_time} минут — {calories_burned:.2f} ккал. "
             f"Дополнительно: выпейте {water_consumed} мл воды."
         )
 
+        # Завершаем состояние
+        await state.clear()
+
     except ValueError:
-        await message.reply("Время тренировки должно быть числом в минутах.")
+        await message.reply("Введите корректное число минут.")
     except Exception as e:
         await message.reply(f"Произошла ошибка: {e}")
+        await state.clear()
 
 
 # Проверка прогресса
@@ -352,7 +380,13 @@ async def check_progress(message: Message):
 
     # Прогресс по воде и калориям
     water_progress = f"Вода: {user['logged_water']} из {user['water_goal']} мл"
+    water_remain = float(user['water_goal']) - float(user['logged_water'])
+    water_to_drink = f"Осталось выпить: {water_remain} мл"
+
     calorie_progress = f"Калории: {user['logged_calories']} из {user['calorie_goal']} ккал"
+    calorie_remain = float(user['calorie_goal']) - float(user['logged_calories'])
+    calorie_were_burned = f"Сожжено: {user['burned_calories']} ккал"
+    calorie_to_eat = f"Осталось потребить: {calorie_remain} ккал"
 
     # История по дням
     history = "\n\nИстория:\n" + "\n".join(
@@ -361,4 +395,4 @@ async def check_progress(message: Message):
     )
 
     # Отправляем сообщение с прогрессом и историей
-    await message.reply(f"Ваш прогресс:\n{water_progress}\n{calorie_progress}{history}")
+    await message.reply(f"📊 Ваш прогресс:\n{water_progress}\n{water_to_drink}\n{calorie_progress}\n{calorie_were_burned}\n{calorie_to_eat}{history}")
